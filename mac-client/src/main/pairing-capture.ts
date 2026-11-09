@@ -14,6 +14,12 @@ import { execFile } from 'node:child_process';
 import jsQR from 'jsqr';
 import { z } from 'zod';
 
+import {
+  createDeviceIdentity,
+  deleteDeviceIdentity,
+  fingerprintPublicKeySpki,
+} from '../../../client-core/src/deviceSigning';
+
 export type PairingCaptureErrorCode =
   | 'screen_permission_denied'
   | 'qr_not_found'
@@ -51,7 +57,16 @@ const offerPreviewSchema = z
     computerName: z.string().min(1).max(80).optional(),
   })
   .passthrough();
-export type PairingOfferPreview = z.infer<typeof offerPreviewSchema>;
+export type PairingOfferPreview = z.infer<typeof offerPreviewSchema> & {
+  /** Our submitting device's SAS fingerprint — shown for comparison against
+   * the fingerprint the Connector approval dialog displays. */
+  deviceKeyFingerprint?: string;
+};
+
+interface StashedDeviceIdentity {
+  keyId: string;
+  publicKeySpki: string;
+}
 
 function electronApi(): typeof import('electron') {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -155,6 +170,17 @@ async function captureOnce(): Promise<string> {
       'qr_invalid',
     );
   }
+  // Without a Screen Recording grant macOS hands back wallpaper-only
+  // thumbnails — windows (and any QR inside them) never reach the decoder.
+  // 'not-determined' lands here too: the capture attempt above registers the
+  // app in the TCC list, so report the grant path rather than "no QR".
+  const { systemPreferences } = electronApi();
+  if (systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
+    throw new PairingCaptureError(
+      'Screen Recording permission is required to see the QR — enable it for Otterin in System Settings > Privacy & Security > Screen Recording, restart the app, then try again',
+      'screen_permission_denied',
+    );
+  }
   throw new PairingCaptureError(
     'No pairing QR was visible on any screen — open Otterin Connector so its pairing view is showing',
     'qr_not_found',
@@ -204,7 +230,7 @@ export async function capturePairingOffer(): Promise<CaptureResult> {
     try {
       const payload = await captureOnce();
       const preview = previewOffer(payload);
-      stashPendingOffer(payload, preview);
+      await stashPendingOffer(payload, preview);
       return { preview, attempts: attempt };
     } catch (error) {
       if (
@@ -230,17 +256,17 @@ export async function capturePairingOffer(): Promise<CaptureResult> {
 
 /** Decode a renderer-supplied RGBA frame (canvas ImageData from a dropped
  *  screenshot — the zero-permission fallback in PLAN §8). */
-export function importPairingOfferPixels(
+export async function importPairingOfferPixels(
   rgba: Uint8ClampedArray,
   width: number,
   height: number,
-): CaptureResult {
+): Promise<CaptureResult> {
   const payload = decodeQrFromRgba(rgba, width, height);
   if (payload === null) {
     throw new PairingCaptureError('No pairing QR was found in that image', 'qr_not_found');
   }
   const preview = previewOffer(payload);
-  stashPendingOffer(payload, preview);
+  await stashPendingOffer(payload, preview);
   return { preview, attempts: 1 };
 }
 
@@ -267,12 +293,22 @@ interface PendingOffer {
   payload: string;
   preview: PairingOfferPreview;
   stashedAt: number;
+  /** Device identity created at capture time so the approve screen can show
+   * the submitting key's fingerprint before it is sent. Reused by
+   * pair:submit via options.deviceIdentity — if pairing created a fresh key
+   * instead, the displayed fingerprint would not match the approved one. */
+  deviceIdentity: StashedDeviceIdentity;
 }
 
 let pendingOffer: PendingOffer | null = null;
 
-function stashPendingOffer(payload: string, preview: PairingOfferPreview): void {
-  pendingOffer = { payload, preview, stashedAt: Date.now() };
+async function stashPendingOffer(payload: string, preview: PairingOfferPreview): Promise<void> {
+  const previous = pendingOffer;
+  pendingOffer = null;
+  if (previous) await deleteDeviceIdentity(previous.deviceIdentity.keyId).catch(() => undefined);
+  const deviceIdentity = await createDeviceIdentity();
+  preview.deviceKeyFingerprint = await fingerprintPublicKeySpki(deviceIdentity.publicKeySpki);
+  pendingOffer = { payload, preview, stashedAt: Date.now(), deviceIdentity };
 }
 
 export function hasPendingOffer(): boolean {
@@ -284,24 +320,30 @@ export function getPendingOfferPreview(): PairingOfferPreview | null {
 }
 
 export function clearPendingOffer(): void {
+  const offer = pendingOffer;
   pendingOffer = null;
+  if (offer) void deleteDeviceIdentity(offer.deviceIdentity.keyId).catch(() => undefined);
 }
 
 /**
  * Returns the stashed payload and zeroes the slot. Refuses offers whose
  * expiry has already passed — client-core re-validates authoritatively.
  */
-export function consumePendingOffer(): string {
+export function consumePendingOffer(): {
+  payload: string;
+  deviceIdentity: StashedDeviceIdentity;
+} {
   const offer = pendingOffer;
   pendingOffer = null;
   if (!offer) {
     throw new PairingCaptureError('No captured pairing code is waiting', 'qr_not_found');
   }
   if (offer.preview.expiresAt <= Date.now()) {
+    void deleteDeviceIdentity(offer.deviceIdentity.keyId).catch(() => undefined);
     throw new PairingCaptureError(
       'The pairing code has expired — capture a fresh one',
       'qr_invalid',
     );
   }
-  return offer.payload;
+  return { payload: offer.payload, deviceIdentity: offer.deviceIdentity };
 }
