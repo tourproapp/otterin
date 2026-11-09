@@ -71,7 +71,9 @@ export function Onboarding({ onDone }: { onDone(): void }) {
   const [grants, setGrants] = useState<ComputerGrants | null>(null);
   const [pairedName, setPairedName] = useState<string | null>(null);
   const [connectorOpenNote, setConnectorOpenNote] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
   const submitting = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const runCapture = useCallback(async () => {
     setScanState('scanning');
@@ -141,6 +143,48 @@ export function Onboarding({ onDone }: { onDone(): void }) {
     setConnectorOpenNote(true);
     void store.bridge.openConnector().catch(() => undefined);
   }, [store]);
+
+  // Zero-permission fallback: a screenshot of the Connector's QR dropped or
+  // picked here decodes through the same one-shot offer path as the live
+  // screen scan — nothing is saved or uploaded.
+  const importScreenshot = useCallback(
+    async (file: File) => {
+      setScanState('scanning');
+      setScanError(null);
+      try {
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Canvas 2D unavailable');
+        context.drawImage(bitmap, 0, 0);
+        const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+        bitmap.close();
+        const result = await store.bridge.pairImport({
+          width: image.width,
+          height: image.height,
+          rgba: image.data,
+        });
+        if (result.status === 'captured') {
+          setCapture(result);
+          setSubmitState('waiting');
+          setStep('approve');
+        } else {
+          setScanState('failed');
+          setScanError(
+            'No pairing QR was found in that image. Take a fresh screenshot of the Connector pairing window and try again.',
+          );
+        }
+      } catch {
+        setScanState('failed');
+        setScanError(
+          'Could not read that image. Use a PNG screenshot of the Connector pairing window.',
+        );
+      }
+    },
+    [store],
+  );
 
   const grantRows: [string, boolean | undefined, string][] = [
     ['View sessions', grants?.viewSessions, 'See history and live activity'],
@@ -230,6 +274,45 @@ export function Onboarding({ onDone }: { onDone(): void }) {
               >
                 {scanState === 'failed' ? 'Try again' : 'Scan again'}
               </button>
+            </div>
+            <div
+              className={clsx(
+                'mt-4 rounded-card border border-dashed px-4 py-3.5 text-[12px] transition-colors',
+                dropActive
+                  ? 'border-brand bg-tintPrimary text-textHi'
+                  : 'border-borderSubtle text-textLow',
+              )}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDropActive(true);
+              }}
+              onDragLeave={() => setDropActive(false)}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDropActive(false);
+                const file = event.dataTransfer.files?.[0];
+                if (file) void importScreenshot(file);
+              }}
+            >
+              No screen permission? Drop a screenshot of the QR here
+              <button
+                type="button"
+                className="mt-1.5 block w-full text-center font-medium text-brand hover:underline"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                or choose an image…
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void importScreenshot(file);
+                  event.target.value = '';
+                }}
+              />
             </div>
           </div>
         )}

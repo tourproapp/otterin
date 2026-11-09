@@ -97,6 +97,7 @@ export type BridgeErrorCode =
 
 export type OtterinChannel =
   | 'pair:capture'
+  | 'pair:import'
   | 'pair:submit'
   | 'computers:list'
   | 'computers:disconnect'
