@@ -1087,6 +1087,18 @@ export function createMockOtterin(options: { fresh?: boolean } = {}): OtterinBri
         return ok(result);
       }
 
+      case 'pair:import': {
+        await sleep(800);
+        const result: PairCapture = {
+          status: 'captured',
+          computerName: 'Screenshot Mac',
+          bridgeKeyFingerprint: base64urlFingerprint('bridgekey').padEnd(43, 'x'),
+          deviceKeyFingerprint: base64urlFingerprint('thismac'),
+          expiresAt: Date.now() + 110_000,
+        };
+        return ok(result);
+      }
+
       case 'pair:submit': {
         if (pairingSubmittedAt === 0) pairingSubmittedAt = Date.now();
         await sleep(4_500);

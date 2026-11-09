@@ -99,6 +99,13 @@ export interface Bridge {
   ): Promise<{ accepted: true; sessionId: string }>;
   revokeDevice(bridgeId: string): Promise<{ revoked: true }>;
   pairCapture(): Promise<PairCapture>;
+  /** Zero-permission fallback: decoded RGBA pixels of a screenshot showing
+   * the pairing QR (dropped file / paste — the payload never leaves main). */
+  pairImport(input: {
+    width: number;
+    height: number;
+    rgba: Uint8ClampedArray;
+  }): Promise<PairCapture>;
   pairSubmit(deviceName: string): Promise<PairSubmit>;
   /** main-wired affordances (documented channels; may reject until wired). */
   openConnector(): Promise<unknown>;
@@ -149,6 +156,7 @@ export function createBridge(transport: OtterinBridge): Bridge {
     createSession: (bridgeId, input) => call('session:create', { bridgeId, ...input }),
     revokeDevice: (bridgeId) => call('device:revoke', { bridgeId }),
     pairCapture: () => call('pair:capture'),
+    pairImport: (input) => call('pair:import', input),
     pairSubmit: (deviceName) => call('pair:submit', { deviceName }),
     openConnector: () => call('app:openConnector'),
     openDevin: () => call('app:openDevin'),
