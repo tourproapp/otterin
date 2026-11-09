@@ -124,10 +124,10 @@ function assertScreenAccess(): void {
 }
 
 /**
- * 'not-determined' means there is no TCC record at all — the app will not
- * even appear in System Settings > Screen Recording for the user to toggle.
- * Electron 33 has no askForMediaAccess('screen') and getSources preflights
- * the permission without registering, so the entry never materialises.
+ * Without a TCC record the app never appears in System Settings > Screen
+ * Recording — there is nothing for the user to toggle. Electron 33 has no
+ * askForMediaAccess('screen') and getSources preflights the permission
+ * without registering, so the entry never materialises on its own.
  *
  * Spawning this JXA one-liner calls CGRequestScreenCaptureAccess from a
  * child process — TCC responsibility is inherited from the spawning app, so
@@ -141,7 +141,11 @@ const JXA_REQUEST_SCREEN_ACCESS =
 
 function requestScreenAccessIfNeeded(): Promise<void> {
   const { systemPreferences } = electronApi();
-  if (systemPreferences.getMediaAccessStatus('screen') !== 'not-determined') {
+  // getMediaAccessStatus('screen') wraps CGPreflightScreenCaptureAccess — a
+  // boolean API — so an unregistered app reports 'denied', never
+  // 'not-determined'. Anything short of granted means we may still need the
+  // TCC record; once determined the request returns immediately at no cost.
+  if (systemPreferences.getMediaAccessStatus('screen') === 'granted') {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
