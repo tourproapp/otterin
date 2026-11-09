@@ -308,8 +308,21 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       const { payload, deviceIdentity } = pending;
       pairAbort = new AbortController();
       const controller = pairAbort;
+      // client-core resolves a PairedComputerSummary on success and throws
+      // for every failure — normalise to the renderer's {status} contract so
+      // approval can't silently land on an unrecognised shape.
       return requireClientCoreProtocol()
         .pairFromQrPayload(payload, controller.signal, deviceIdentity)
+        .then((summary) => ({
+          status: 'approved',
+          computerName: (summary as { computerName?: string } | null)?.computerName,
+        }))
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : '';
+          if (message.includes('denied')) return { status: 'denied' };
+          if (message.includes('expired')) return { status: 'expired' };
+          throw error;
+        })
         .finally(() => {
           if (pairAbort === controller) {
             pairAbort = null;
