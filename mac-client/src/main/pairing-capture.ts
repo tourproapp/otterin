@@ -123,6 +123,37 @@ function assertScreenAccess(): void {
 }
 
 /**
+ * 'not-determined' means there is no TCC record at all — the app will not
+ * even appear in System Settings > Screen Recording for the user to toggle.
+ * Electron 33 has no askForMediaAccess('screen') and getSources preflights
+ * the permission without registering, so the entry never materialises.
+ *
+ * Spawning this JXA one-liner calls CGRequestScreenCaptureAccess from a
+ * child process — TCC responsibility is inherited from the spawning app, so
+ * the system prompt and the Settings list entry say "Otterin". The return
+ * value doesn't matter: the post-capture check reports the true status.
+ */
+const JXA_REQUEST_SCREEN_ACCESS =
+  'ObjC.import("CoreGraphics");' +
+  'ObjC.bindFunction("CGRequestScreenCaptureAccess", ["BOOL", []]);' +
+  '$.CGRequestScreenCaptureAccess()';
+
+function requestScreenAccessIfNeeded(): Promise<void> {
+  const { systemPreferences } = electronApi();
+  if (systemPreferences.getMediaAccessStatus('screen') !== 'not-determined') {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    execFile(
+      '/usr/bin/osascript',
+      ['-l', 'JavaScript', '-e', JXA_REQUEST_SCREEN_ACCESS],
+      { timeout: 15_000 },
+      () => resolve(),
+    );
+  });
+}
+
+/**
  * One capture pass across all displays. Returns the first decoded payload
  * that previews as a pairing offer. A QR that decodes but is not an offer
  * does not stop the scan of remaining displays — an unrelated QR code on
@@ -130,6 +161,7 @@ function assertScreenAccess(): void {
  */
 async function captureOnce(): Promise<string> {
   const { desktopCapturer, screen } = electronApi();
+  await requestScreenAccessIfNeeded();
   assertScreenAccess();
   let sawNonOfferQr = false;
   for (const display of screen.getAllDisplays()) {
