@@ -252,6 +252,9 @@ async function respondPairCapture(result: Promise<CaptureResult>): Promise<unkno
     };
   } catch (error) {
     if (error instanceof PairingCaptureError) {
+      // 'offer_expired' propagates as an IPC error so the renderer can show
+      // the stale-screenshot copy instead of the generic failure reasons.
+      if (error.code === 'offer_expired') throw error;
       const reason =
         error.code === 'screen_permission_denied'
           ? 'capture_denied'
@@ -293,7 +296,16 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       return Promise.resolve({ cancelled: true });
     },
     'pair:submit': () => {
-      const { payload, deviceIdentity } = consumePendingOffer();
+      let pending: ReturnType<typeof consumePendingOffer>;
+      try {
+        pending = consumePendingOffer();
+      } catch (error) {
+        if (error instanceof PairingCaptureError && error.code === 'offer_expired') {
+          return Promise.resolve({ status: 'expired' });
+        }
+        throw error;
+      }
+      const { payload, deviceIdentity } = pending;
       pairAbort = new AbortController();
       const controller = pairAbort;
       return requireClientCoreProtocol()
