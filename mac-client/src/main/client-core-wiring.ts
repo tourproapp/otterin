@@ -67,7 +67,11 @@ export interface ClientCoreBridgeModule {
 
 /** The ipc-facing protocol contract (renderer never sees raw credentials). */
 export interface ClientCoreProtocol {
-  pairFromQrPayload(payload: string, signal?: AbortSignal): Promise<unknown>;
+  pairFromQrPayload(
+    payload: string,
+    signal?: AbortSignal,
+    deviceIdentity?: { keyId: string; publicKeySpki: string },
+  ): Promise<unknown>;
   loadPairedComputerSummaries(): Promise<unknown>;
   openBridge(bridgeId: string): Promise<BridgeConnection>;
   disconnectComputer(bridgeId: string): Promise<void>;
@@ -103,12 +107,13 @@ export function requireClientCoreProtocol(): ClientCoreProtocol {
  */
 export function protocolFromClientCore(mod: ClientCoreBridgeModule): ClientCoreProtocol {
   return {
-    pairFromQrPayload: (payload, signal) =>
+    pairFromQrPayload: (payload, signal, deviceIdentity) =>
       mod.pairComputerFromQrPayload(payload, {
         computerName: DEFAULT_COMPUTER_NAME,
         useConnectorComputerName: true,
         deviceName: PAIRING_DEVICE_NAME,
         ...(signal ? { signal } : {}),
+        ...(deviceIdentity ? { deviceIdentity } : {}),
       }),
     loadPairedComputerSummaries: () => mod.loadPairedComputerSummaries(),
     openBridge: async (bridgeId) => {

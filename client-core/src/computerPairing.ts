@@ -195,6 +195,10 @@ export interface PairComputerOptions {
   computerName: string;
   useConnectorComputerName?: boolean;
   deviceName?: string;
+  /** Pre-created identity so the pairing UI can display this device's
+   * fingerprint for SAS comparison before submit. Created internally when
+   * absent. On failure the identity is deleted either way. */
+  deviceIdentity?: { keyId: string; publicKeySpki: string };
   signal?: AbortSignal;
   onStatus?: (status: ComputerPairingStatus) => void;
 }
@@ -437,7 +441,7 @@ async function performComputerPairing(
     throw new Error('Remove a paired local device before adding another');
 
   notify(options, 'creating_device_identity');
-  const identity = await createDeviceIdentity();
+  const identity = options.deviceIdentity ?? (await createDeviceIdentity());
   const deviceId = `device_${identity.keyId.replaceAll('-', '')}`;
   let stored = false;
   try {

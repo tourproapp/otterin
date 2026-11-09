@@ -22,6 +22,7 @@ import {
   getPendingOfferPreview,
   importPairingOfferPixels,
   PairingCaptureError,
+  type CaptureResult,
 } from './pairing-capture';
 import { SecretStoreError } from './secrets.mac';
 import { BridgeTransportError } from './transport.node';
@@ -235,6 +236,33 @@ function resolveBridge(bridgeId: string, resolve?: ResolveBridgeConnection) {
   return resolver(bridgeId);
 }
 
+// The renderer's PairCapture contract: {status:'captured', preview fields}
+// or {status:'failed', reason} — typed capture errors become reasons, not
+// IPC rejections, so the onboarding copy can distinguish them.
+async function respondPairCapture(result: Promise<CaptureResult>): Promise<unknown> {
+  try {
+    const { preview } = await result;
+    return {
+      status: 'captured',
+      computerName: preview.computerName,
+      bridgeKeyFingerprint: preview.bridgeKeyFingerprint,
+      deviceKeyFingerprint: preview.deviceKeyFingerprint,
+      expiresAt: preview.expiresAt,
+    };
+  } catch (error) {
+    if (error instanceof PairingCaptureError) {
+      const reason =
+        error.code === 'screen_permission_denied'
+          ? 'capture_denied'
+          : error.code === 'qr_invalid'
+            ? 'invalid'
+            : 'no_qr';
+      return { status: 'failed', reason };
+    }
+    throw error;
+  }
+}
+
 const computerSummaryListSchema = z.array(
   z.object({ bridgeId: z.string().min(16).max(128) }).passthrough(),
 );
@@ -245,7 +273,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   let pairAbort: AbortController | null = null;
 
   const dispatch: Record<OtterinIpcChannel, (payload: unknown) => Promise<unknown>> = {
-    'pair:capture': () => capturePairingOffer(),
+    'pair:capture': () => respondPairCapture(capturePairingOffer()),
     'pair:import': (payload) => {
       const { width, height, rgba } = pairImportSchema.parse(payload);
       const clamped =
@@ -254,7 +282,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
           : rgba instanceof ArrayBuffer
             ? new Uint8ClampedArray(rgba)
             : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
-      return Promise.resolve(importPairingOfferPixels(clamped, width, height));
+      return respondPairCapture(importPairingOfferPixels(clamped, width, height));
     },
     'pair:preview': () => Promise.resolve(getPendingOfferPreview()),
     'pair:cancel': () => {
@@ -264,11 +292,11 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       return Promise.resolve({ cancelled: true });
     },
     'pair:submit': () => {
-      const payload = consumePendingOffer();
+      const { payload, deviceIdentity } = consumePendingOffer();
       pairAbort = new AbortController();
       const controller = pairAbort;
       return requireClientCoreProtocol()
-        .pairFromQrPayload(payload, controller.signal)
+        .pairFromQrPayload(payload, controller.signal, deviceIdentity)
         .finally(() => {
           if (pairAbort === controller) {
             pairAbort = null;
