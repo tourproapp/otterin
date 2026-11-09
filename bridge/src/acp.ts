@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { isAbsolute } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { z, type ZodType } from 'zod';
@@ -17,7 +18,7 @@ import { utf8Tail } from './text';
 
 const ACP_PROTOCOL_VERSION = 1 as const;
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_PROMPT_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 10 * 60_000;
 const MAX_JSON_RPC_BYTES = 1024 * 1024;
@@ -1027,7 +1028,38 @@ export function safeAcpChildEnvironment(
     const value = source[key];
     if (value) environment[key] = value;
   }
+  if (!environment.WINDSURF_API_KEY) {
+    const imported = devinCredentialApiKey(source);
+    if (imported) environment.WINDSURF_API_KEY = imported;
+  }
   return environment;
+}
+
+const DEVIN_CREDENTIALS_FILE_BYTES = 64 * 1024;
+const WINDSURF_API_KEY_PATTERN = /^\s*windsurf_api_key\s*=\s*"([A-Za-z0-9._~+/=-]{8,512})"\s*$/m;
+
+// ACP spawns ignore the CLI credential store by design and require the host
+// to authenticate — but devin acp only offers an interactive browser flow.
+// Importing the locally stored windsurf_api_key into the child environment
+// makes the child pre-authenticated, so prompts work without a browser
+// round-trip. An explicit WINDSURF_API_KEY always wins over the file.
+function devinCredentialApiKey(source: NodeJS.ProcessEnv): string | null {
+  const xdgData = source.XDG_DATA_HOME;
+  const home = source.HOME ?? source.USERPROFILE;
+  const credentialsPath =
+    xdgData && isAbsolute(xdgData)
+      ? join(xdgData, 'devin', 'credentials.toml')
+      : home && isAbsolute(home)
+        ? join(home, '.local', 'share', 'devin', 'credentials.toml')
+        : null;
+  if (!credentialsPath) return null;
+  try {
+    const content = readFileSync(credentialsPath, 'utf8');
+    if (Buffer.byteLength(content, 'utf8') > DEVIN_CREDENTIALS_FILE_BYTES) return null;
+    return WINDSURF_API_KEY_PATTERN.exec(content)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function acpWorkingDirectory(environment: NodeJS.ProcessEnv): string {
@@ -1257,6 +1289,8 @@ export class AcpSessionClient {
   private creatingContinuation = false;
   private modelCatalog: AcpModelCatalog | null = null;
   private readonly sessionModelSelectors = new Map<string, AcpModelSelector>();
+  private authenticated = false;
+  private authenticating: Promise<boolean> | null = null;
 
   constructor(options: AcpClientOptions) {
     this.options = acpClientOptionsSchema.parse(options);
@@ -1284,6 +1318,10 @@ export class AcpSessionClient {
     this.creatingContinuation = false;
     this.modelCatalog = null;
     this.sessionModelSelectors.clear();
+    // A forwarded WINDSURF_API_KEY makes the child pre-authenticated;
+    // otherwise authenticate is deferred to the first credential-gated call.
+    this.authenticated = Boolean(environment.WINDSURF_API_KEY);
+    this.authenticating = null;
     this.canListSessions = false;
     this.canLoadSessions = false;
     this.canEmbedContext = false;
@@ -1392,6 +1430,20 @@ export class AcpSessionClient {
 
   isSessionPermissionSupported(): boolean {
     return Boolean(this.child);
+  }
+
+  // PID of the spawned `devin acp` child, compared against session lock files
+  // to attribute a live lock to this bridge rather than an external driver.
+  getSessionDriverPid(): number | null {
+    return this.child?.pid ?? null;
+  }
+
+  // True while this session has a live bridge-owned prompt turn. The finished
+  // turn snapshot in activeTurn is intentionally not evidence of ownership:
+  // finishPrompt releases the session lock before retaining the snapshot.
+  isSessionConnectorOwned(sessionIdInput: unknown): boolean {
+    const parsed = sessionIdSchema.safeParse(sessionIdInput);
+    return parsed.success && this.activePromptSessionId === parsed.data;
   }
 
   async getSessionActivity(sessionIdInput: unknown): Promise<AcpSessionActivity | null> {
@@ -1623,6 +1675,37 @@ export class AcpSessionClient {
     }
   }
 
+  // Newer devin acp builds require host authentication before session
+  // prompts. Authentication is deferred until the first credential-gated
+  // call because session/list and session/load answer without it, and a
+  // hanging authenticate request would serialize-block every later request
+  // on this child. On timeout request() aborts the child so the runner
+  // respawns a clean process for the next call.
+  private ensureAuthenticated(): Promise<boolean> {
+    if (this.authenticated) return Promise.resolve(true);
+    if (!this.authenticating) {
+      this.authenticating = this.request(
+        'authenticate',
+        { methodId: 'devin-browser' },
+        z.object({}).passthrough(),
+        'authentication',
+      ).then(
+        () => {
+          this.authenticated = true;
+          return true;
+        },
+        () => false,
+      );
+    }
+    return this.authenticating;
+  }
+
+  private async requireAuthentication(): Promise<void> {
+    if (!(await this.ensureAuthenticated())) {
+      throw new Error('Devin session authentication is unavailable');
+    }
+  }
+
   async loadSession(input: unknown): Promise<AcpLoadedSession> {
     if (!this.child) throw new Error('ACP client is not started');
     if (!this.canLoadSessions) throw new Error('ACP agent does not support session loading');
@@ -1698,6 +1781,7 @@ export class AcpSessionClient {
     if (!this.loadedSessions.has(sessionId)) {
       throw new Error('ACP session must be loaded before prompting');
     }
+    await this.requireAuthentication();
     if (modelInput !== undefined) await this.selectSessionModel(sessionId, modelInput);
     if (autoApprove !== undefined) await this.applyAutoApprove(sessionId, autoApprove);
     this.startPrompt(sessionId, [{ type: 'text', text }]);
@@ -1724,6 +1808,7 @@ export class AcpSessionClient {
     }
     this.creatingContinuation = true;
     try {
+      await this.requireAuthentication();
       const created = await this.request(
         'session/new',
         { cwd, mcpServers: [] },
@@ -1786,6 +1871,7 @@ export class AcpSessionClient {
     }
     this.creatingContinuation = true;
     try {
+      await this.requireAuthentication();
       const created = await this.request(
         'session/new',
         { cwd, mcpServers: [] },
