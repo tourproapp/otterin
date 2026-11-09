@@ -154,6 +154,7 @@ const channelSchemas = {
   'scheduler:pollNow': emptyPayloadSchema,
   'app:openConnector': emptyPayloadSchema,
   'app:openDevin': emptyPayloadSchema,
+  'app:openScreenSettings': emptyPayloadSchema,
 } as const;
 
 export type OtterinIpcChannel = keyof typeof channelSchemas;
@@ -430,6 +431,13 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     },
     'app:openConnector': () => openMacApp('Otterin Connector'),
     'app:openDevin': () => openMacApp('Devin'),
+    // Fixed URL — the renderer cannot influence which pane opens.
+    'app:openScreenSettings': () =>
+      electronApi()
+        .shell.openExternal(
+          'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+        )
+        .then(() => ({ opened: true })),
   };
 
   for (const channel of OTTERIN_IPC_CHANNELS) {

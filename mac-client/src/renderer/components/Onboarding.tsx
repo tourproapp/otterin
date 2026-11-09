@@ -16,11 +16,9 @@ const DEVICE_NAME = 'Otterin (Mac)';
 type Step = 'welcome' | 'scan' | 'approve' | 'grants' | 'done';
 
 type CaptureOk = Extract<PairCapture, { status: 'captured' }>;
+type CaptureFailReason = Extract<PairCapture, { status: 'failed' }>['reason'];
 
-const CAPTURE_FAILURE_COPY: Record<
-  Extract<PairCapture, { status: 'failed' }>['reason'],
-  string
-> = {
+const CAPTURE_FAILURE_COPY: Record<CaptureFailReason, string> = {
   no_qr: 'No pairing QR found on screen. Open Otterin Connector and show its pairing window, then try again.',
   capture_denied: 'Screen recording permission was denied. Grant it in System Settings, then try again.',
   invalid: 'The QR on screen was not a valid Otterin pairing offer. Show the pairing window and try again.',
@@ -55,7 +53,7 @@ function BigFingerprint({ label, value, highlight }: { label: string; value: str
       )}
     >
       <div className="text-[10px] font-medium uppercase tracking-wide text-textLow">{label}</div>
-      <div className="mt-1.5 font-mono text-[18px] font-semibold tracking-[0.15em] text-textHi">
+      <div className="mt-1.5 break-all font-mono text-[15px] font-semibold leading-6 tracking-[0.08em] text-textHi">
         {value}
       </div>
     </div>
@@ -68,6 +66,7 @@ export function Onboarding({ onDone }: { onDone(): void }) {
   const [capture, setCapture] = useState<CaptureOk | null>(null);
   const [scanState, setScanState] = useState<'idle' | 'scanning' | 'failed'>('idle');
   const [scanError, setScanError] = useState<string | null>(null);
+  const [scanReason, setScanReason] = useState<CaptureFailReason | null>(null);
   const [submitState, setSubmitState] = useState<'waiting' | 'denied' | 'expired' | 'error'>('waiting');
   const [grants, setGrants] = useState<ComputerGrants | null>(null);
   const [pairedName, setPairedName] = useState<string | null>(null);
@@ -79,6 +78,7 @@ export function Onboarding({ onDone }: { onDone(): void }) {
   const runCapture = useCallback(async () => {
     setScanState('scanning');
     setScanError(null);
+    setScanReason(null);
     try {
       const result = await store.bridge.pairCapture();
       if (result.status === 'captured') {
@@ -87,6 +87,7 @@ export function Onboarding({ onDone }: { onDone(): void }) {
         setStep('approve');
       } else {
         setScanState('failed');
+        setScanReason(result.reason);
         setScanError(CAPTURE_FAILURE_COPY[result.reason]);
       }
     } catch {
@@ -143,9 +144,9 @@ export function Onboarding({ onDone }: { onDone(): void }) {
     void store.bridge.openConnector().catch(() => undefined);
   }, [store]);
 
-  // Zero-permission fallback: a screenshot of the Connector's QR dropped or
-  // picked here decodes through the same one-shot offer path as the live
-  // screen scan — nothing is saved or uploaded.
+  // Zero-permission fallback: a screenshot of the Connector's QR dropped,
+  // pasted, or picked here decodes through the same one-shot offer path as
+  // the live screen scan — nothing is saved or uploaded.
   const importScreenshot = useCallback(
     async (file: File) => {
       setScanState('scanning');
@@ -185,6 +186,21 @@ export function Onboarding({ onDone }: { onDone(): void }) {
     [store],
   );
 
+  // ⌘V works too — Finder screenshots and most copy sources arrive as a
+  // clipboard file. Only while the scan step is up.
+  useEffect(() => {
+    if (step !== 'scan') return undefined;
+    const onPaste = (event: ClipboardEvent) => {
+      const file = event.clipboardData?.files?.[0];
+      if (file && file.type.startsWith('image/')) {
+        event.preventDefault();
+        void importScreenshot(file);
+      }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [step, importScreenshot]);
+
   const grantRows: [string, boolean | undefined, string][] = [
     ['View sessions', grants?.viewSessions, 'See history and live activity'],
     ['Send prompts', grants?.sendPrompts, 'Send messages and answer questions'],
@@ -192,8 +208,39 @@ export function Onboarding({ onDone }: { onDone(): void }) {
   ];
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col items-center justify-center bg-surface0 px-8">
+    <div
+      className="relative flex min-w-0 flex-1 flex-col items-center justify-center bg-surface0 px-8"
+      onDragEnter={(event) => {
+        if (step === 'scan') {
+          event.preventDefault();
+          setDropActive(true);
+        }
+      }}
+      onDragOver={(event) => {
+        if (step === 'scan') event.preventDefault();
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget === event.target) setDropActive(false);
+      }}
+      onDrop={(event) => {
+        if (step !== 'scan') return;
+        event.preventDefault();
+        setDropActive(false);
+        const file = event.dataTransfer.files?.[0];
+        if (file) void importScreenshot(file);
+      }}
+    >
       <div className="titlebar-drag fixed inset-x-0 top-0 h-12" />
+      {dropActive && step === 'scan' && (
+        <div className="pointer-events-none fixed inset-3 z-40 flex items-center justify-center rounded-sheet border-2 border-dashed border-brand bg-surface0/85">
+          <div className="text-center">
+            <Icon name="desktop" size={36} className="mx-auto text-brand" />
+            <div className="mt-3 text-[14px] font-medium text-textHi">
+              Drop the QR screenshot to pair
+            </div>
+          </div>
+        </div>
+      )}
       <div className="w-full max-w-md">
         {step === 'welcome' && (
           <div className="text-center">
@@ -249,6 +296,17 @@ export function Onboarding({ onDone }: { onDone(): void }) {
               scanError && (
                 <div className="mt-5 rounded-card border border-border bg-surface1 px-4 py-3 text-[12px] leading-5 text-textMid">
                   {scanError}
+                  {scanReason === 'capture_denied' && (
+                    <button
+                      type="button"
+                      className="mt-2.5 w-full rounded-card border border-border py-2 text-[12px] font-medium text-textHi hover:bg-tintSecondary"
+                      onClick={() =>
+                        void store.bridge.openScreenSettings().catch(() => undefined)
+                      }
+                    >
+                      Open Screen Recording Settings
+                    </button>
+                  )}
                 </div>
               )
             )}
@@ -281,19 +339,8 @@ export function Onboarding({ onDone }: { onDone(): void }) {
                   ? 'border-brand bg-tintPrimary text-textHi'
                   : 'border-borderSubtle text-textLow',
               )}
-              onDragOver={(event) => {
-                event.preventDefault();
-                setDropActive(true);
-              }}
-              onDragLeave={() => setDropActive(false)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setDropActive(false);
-                const file = event.dataTransfer.files?.[0];
-                if (file) void importScreenshot(file);
-              }}
             >
-              No screen permission? Drop a screenshot of the QR here
+              No screen permission? Drop a screenshot anywhere in this window, or paste it (⌘V)
               <button
                 type="button"
                 className="mt-1.5 block w-full text-center font-medium text-brand hover:underline"

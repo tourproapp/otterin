@@ -62,6 +62,8 @@
  *                                   pairing window is visible for capture.
  *   app:openDevin             ()  — `open -a Devin` (app-level only; no
  *                                   per-session deep link exists).
+ *   app:openScreenSettings    ()  — deep-links System Settings to the
+ *                                   Screen Recording pane (fixed URL).
  *
  * Error codes in `error.code` come from the bridge failure map (PLAN §3.2):
  * 404 → 'authorization_failed' | 'not_paired' | 'permission_denied',
@@ -115,7 +117,8 @@ export type OtterinChannel =
   | 'session:create'
   | 'device:revoke'
   | 'app:openConnector'
-  | 'app:openDevin';
+  | 'app:openDevin'
+  | 'app:openScreenSettings';
 
 export interface OtterinBridge {
   invoke(channel: OtterinChannel, payload?: unknown): Promise<unknown>;

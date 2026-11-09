@@ -110,6 +110,7 @@ export interface Bridge {
   /** main-wired affordances (documented channels; may reject until wired). */
   openConnector(): Promise<unknown>;
   openDevin(): Promise<unknown>;
+  openScreenSettings(): Promise<unknown>;
 }
 
 export function createBridge(transport: OtterinBridge): Bridge {
@@ -160,6 +161,7 @@ export function createBridge(transport: OtterinBridge): Bridge {
     pairSubmit: (deviceName) => call('pair:submit', { deviceName }),
     openConnector: () => call('app:openConnector'),
     openDevin: () => call('app:openDevin'),
+    openScreenSettings: () => call('app:openScreenSettings'),
   };
 }
 
