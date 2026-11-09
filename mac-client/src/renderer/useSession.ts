@@ -248,8 +248,11 @@ export function useSessionController(bridgeId: string, sessionId: string): Sessi
 
   // Activity poll: fast while a turn or interaction is live, relaxed when idle.
   usePoll(doActivity, busy || awaiting ? intervals.activity : intervals.history, true);
-  // Committed-state refresh while anything is driving this session.
-  usePoll(doLoad, intervals.history, featuresFetched && busy);
+  // Committed-state refresh while anything is driving this session. The
+  // `loadState === 'loading'` clause keeps the poll armed for the initial
+  // load — without it an idle or externally-owned session (busy=false)
+  // never loads at all and the spinner runs forever.
+  usePoll(doLoad, intervals.history, featuresFetched && (busy || loadState === 'loading'));
   // Pending interactions only while `awaiting` is set — each method has its
   // own rate bucket, so they share the activity cadence.
   usePoll(doInteractions, intervals.activity, awaiting !== undefined);
