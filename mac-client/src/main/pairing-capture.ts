@@ -24,6 +24,7 @@ export type PairingCaptureErrorCode =
   | 'screen_permission_denied'
   | 'qr_not_found'
   | 'qr_invalid'
+  | 'offer_expired'
   | 'connector_not_installed'
   | 'capture_unavailable';
 
@@ -298,6 +299,15 @@ export async function importPairingOfferPixels(
     throw new PairingCaptureError('No pairing QR was found in that image', 'qr_not_found');
   }
   const preview = previewOffer(payload);
+  // Screenshots go stale — a QR captured minutes ago carries an already-dead
+  // offer. Fail here so the scan step can say so, rather than showing the
+  // approve screen and erroring on submit.
+  if (preview.expiresAt <= Date.now()) {
+    throw new PairingCaptureError(
+      'That QR has already expired — take a fresh screenshot of the Connector pairing window',
+      'offer_expired',
+    );
+  }
   await stashPendingOffer(payload, preview);
   return { preview, attempts: 1 };
 }
@@ -374,7 +384,7 @@ export function consumePendingOffer(): {
     void deleteDeviceIdentity(offer.deviceIdentity.keyId).catch(() => undefined);
     throw new PairingCaptureError(
       'The pairing code has expired — capture a fresh one',
-      'qr_invalid',
+      'offer_expired',
     );
   }
   return { payload: offer.payload, deviceIdentity: offer.deviceIdentity };

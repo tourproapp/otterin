@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 
 import { useApp } from '../store';
+import { OtterinBridgeError } from '../errors';
 import type { ComputerGrants, PairCapture } from '../types';
 import { Icon, type IconName } from './Icon';
 
@@ -176,10 +177,12 @@ export function Onboarding({ onDone }: { onDone(): void }) {
             'No pairing QR was found in that image. Take a fresh screenshot of the Connector pairing window and try again.',
           );
         }
-      } catch {
+      } catch (error) {
         setScanState('failed');
         setScanError(
-          'Could not read that image. Use a PNG screenshot of the Connector pairing window.',
+          error instanceof OtterinBridgeError && error.code === 'offer_expired'
+            ? 'That QR already expired — pairing codes only live about two minutes. Take a fresh screenshot of the Connector pairing window and drop it in again.'
+            : 'Could not read that image. Use a PNG screenshot of the Connector pairing window.',
         );
       }
     },
