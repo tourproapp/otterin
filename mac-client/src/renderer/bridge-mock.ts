@@ -1111,6 +1111,7 @@ export function createMockOtterin(options: { fresh?: boolean } = {}): OtterinBri
 
       case 'app:openConnector':
       case 'app:openDevin':
+      case 'app:openScreenSettings':
         return ok({ opened: true });
 
       default:

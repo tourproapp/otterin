@@ -16,11 +16,9 @@ const DEVICE_NAME = 'Otterin (Mac)';
 type Step = 'welcome' | 'scan' | 'approve' | 'grants' | 'done';
 
 type CaptureOk = Extract<PairCapture, { status: 'captured' }>;
+type CaptureFailReason = Extract<PairCapture, { status: 'failed' }>['reason'];
 
-const CAPTURE_FAILURE_COPY: Record<
-  Extract<PairCapture, { status: 'failed' }>['reason'],
-  string
-> = {
+const CAPTURE_FAILURE_COPY: Record<CaptureFailReason, string> = {
   no_qr: 'No pairing QR found on screen. Open Otterin Connector and show its pairing window, then try again.',
   capture_denied: 'Screen recording permission was denied. Grant it in System Settings, then try again.',
   invalid: 'The QR on screen was not a valid Otterin pairing offer. Show the pairing window and try again.',
@@ -68,6 +66,7 @@ export function Onboarding({ onDone }: { onDone(): void }) {
   const [capture, setCapture] = useState<CaptureOk | null>(null);
   const [scanState, setScanState] = useState<'idle' | 'scanning' | 'failed'>('idle');
   const [scanError, setScanError] = useState<string | null>(null);
+  const [scanReason, setScanReason] = useState<CaptureFailReason | null>(null);
   const [submitState, setSubmitState] = useState<'waiting' | 'denied' | 'expired' | 'error'>('waiting');
   const [grants, setGrants] = useState<ComputerGrants | null>(null);
   const [pairedName, setPairedName] = useState<string | null>(null);
@@ -77,6 +76,7 @@ export function Onboarding({ onDone }: { onDone(): void }) {
   const runCapture = useCallback(async () => {
     setScanState('scanning');
     setScanError(null);
+    setScanReason(null);
     try {
       const result = await store.bridge.pairCapture();
       if (result.status === 'captured') {
@@ -85,6 +85,7 @@ export function Onboarding({ onDone }: { onDone(): void }) {
         setStep('approve');
       } else {
         setScanState('failed');
+        setScanReason(result.reason);
         setScanError(CAPTURE_FAILURE_COPY[result.reason]);
       }
     } catch {
